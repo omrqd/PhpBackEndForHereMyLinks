@@ -3,8 +3,32 @@
 // This ensures all relative includes (controllers, models, config) continue to work
 chdir(__DIR__ . '/../');
 
+// 1. Error Handling & Output Buffering
+ob_start();
+ini_set('display_errors', 0);
+error_reporting(E_ALL);
+
+register_shutdown_function(function () {
+    $error = error_get_last();
+    if ($error !== null && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR])) {
+        // Clean buffer to avoid mixed HTML/JSON
+        if (ob_get_length())
+            ob_clean();
+
+        http_response_code(500);
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode([
+            'status' => 'error',
+            'error' => 'PHP Fatal Error',
+            'message' => $error['message'],
+            'file' => basename($error['file']),
+            'line' => $error['line'],
+        ]);
+        exit;
+    }
+});
+
 header("Access-Control-Allow-Origin: *");
-// header("Content-Type: application/json; charset=UTF-8"); // Moved to API block or handled dynamically
 header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
 header("Access-Control-Max-Age: 3600");
 header("Access-Control-Allow-Headers: Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With");
@@ -19,8 +43,10 @@ $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $uri = explode('/', $uri);
 
 // Router
-// $uri[0] is empty, $uri[1] is 'api' OR username
 if (isset($uri[1]) && $uri[1] === 'api') {
+    // 2. Force JSON for all API responses
+    header("Content-Type: application/json; charset=UTF-8");
+
     if (isset($uri[2])) {
         // Auth Routes
         if ($uri[2] === 'register' || $uri[2] === 'login' || $uri[2] === 'get_user_info' || $uri[2] === 'update_notifications' || $uri[2] === 'change_password') {

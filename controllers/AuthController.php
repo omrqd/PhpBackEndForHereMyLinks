@@ -15,143 +15,191 @@ class AuthController
         $this->user = new User($this->db);
     }
 
+    // Helper to get and validate JSON input
+    private function getJsonInput()
+    {
+        $input = file_get_contents("php://input");
+        $data = json_decode($input);
+
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            $this->respond(["message" => "Invalid JSON format"], 400);
+        }
+
+        if (!is_object($data)) {
+            $this->respond(["message" => "Invalid JSON data"], 400);
+        }
+
+        return $data;
+    }
+
+    // Helper to send JSON response
+    private function respond($data, $code = 200)
+    {
+        http_response_code($code);
+        echo json_encode($data);
+        exit;
+    }
+
     public function register()
     {
-        $data = json_decode(file_get_contents("php://input"));
+        try {
+            $data = $this->getJsonInput();
 
-        if (
-            !empty($data->username) &&
-            !empty($data->email) &&
-            !empty($data->password)
-        ) {
-            $this->user->username = $data->username;
-            $this->user->email = $data->email;
-            $this->user->password = $data->password;
+            if (empty($data->username) || empty($data->email) || empty($data->password)) {
+                $this->respond(["message" => "Incomplete data"], 400);
+            }
+
+            $this->user->username = htmlspecialchars(strip_tags($data->username));
+            $this->user->email = htmlspecialchars(strip_tags($data->email));
+            $this->user->password = htmlspecialchars(strip_tags($data->password));
 
             // Check if email already exists
             if ($this->user->emailExists()) {
-                http_response_code(400);
-                echo json_encode(array("message" => "Email already exists."));
-                return;
+                $this->respond(["message" => "Email already exists"], 400);
             }
 
             if ($this->user->create()) {
-                http_response_code(201);
-                echo json_encode(array("message" => "User was created."));
+                $this->respond(["message" => "User was created"], 201);
             } else {
-                http_response_code(503);
-                echo json_encode(array("message" => "Unable to create user."));
+                $this->respond(["message" => "Unable to create user"], 503);
             }
-        } else {
-            http_response_code(400);
-            echo json_encode(array("message" => "Incomplete data."));
+        } catch (Exception $e) {
+            error_log("Register Error: " . $e->getMessage());
+            $this->respond(["message" => "Internal Server Error"], 500);
         }
     }
 
     public function login()
     {
-        $data = json_decode(file_get_contents("php://input"));
+        try {
+            $data = $this->getJsonInput();
 
-        if (!empty($data->email) && !empty($data->password)) {
-            $this->user->email = $data->email;
+            if (empty($data->email) || empty($data->password)) {
+                $this->respond(["message" => "Incomplete data"], 400);
+            }
 
+            $this->user->email = htmlspecialchars(strip_tags($data->email));
+
+            // emailExists() populates $this->user->password with the hash from DB
             if ($this->user->emailExists()) {
                 if (password_verify($data->password, $this->user->password)) {
-                    // Start session
-                    if (session_status() === PHP_SESSION_NONE) {
-                        session_start();
-                    }
-                    $_SESSION['user_id'] = $this->user->id;
-                    $_SESSION['username'] = $this->user->username;
 
-                    http_response_code(200);
-                    echo json_encode(array(
-                        "message" => "Login successful.",
+                    // Session logic (optional for API, kept for compatibility)
+                    if (session_status() === PHP_SESSION_NONE && !headers_sent()) {
+                        @session_start();
+                    }
+                    if (session_status() === PHP_SESSION_ACTIVE) {
+                        $_SESSION['user_id'] = $this->user->id;
+                        $_SESSION['username'] = $this->user->username;
+                    }
+
+                    $this->respond([
+                        "message" => "Login successful",
                         "user_id" => $this->user->id,
                         "username" => $this->user->username
-                    ));
+                    ], 200);
                 } else {
-                    http_response_code(401);
-                    echo json_encode(array("message" => "Invalid password."));
+                    $this->respond(["message" => "Invalid password"], 401);
                 }
             } else {
-                http_response_code(401);
-                echo json_encode(array("message" => "User not found."));
+                $this->respond(["message" => "User not found"], 401);
             }
-        } else {
-            http_response_code(400);
-            echo json_encode(array("message" => "Incomplete data."));
+        } catch (Exception $e) {
+            error_log("Login Error: " . $e->getMessage());
+            $this->respond(["message" => "Internal Server Error"], 500);
         }
     }
 
     public function getUserInfo($userId)
     {
-        $this->user->id = $userId;
-        $stmt = $this->user->getUserById();
-        if ($stmt->rowCount() > 0) {
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            echo json_encode(array(
-                "success" => true,
-                "username" => $row['username'],
-                "email" => $row['email'],
-                "email_notifications" => filter_var($row['email_notifications'], FILTER_VALIDATE_BOOLEAN)
-            ));
-        } else {
-            http_response_code(404);
-            echo json_encode(array("success" => false, "message" => "User not found."));
+        try {
+            if (!$userId) {
+                $this->respond(["success" => false, "message" => "User ID required"], 400);
+            }
+
+            $this->user->id = $userId;
+            $stmt = $this->user->getUserById();
+            if ($stmt->rowCount() > 0) {
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                $this->respond([
+                    "success" => true,
+                    "username" => $row['username'],
+                    "email" => $row['email'],
+                    "email_notifications" => filter_var($row['email_notifications'], FILTER_VALIDATE_BOOLEAN)
+                ], 200);
+            } else {
+                $this->respond(["success" => false, "message" => "User not found"], 404);
+            }
+        } catch (Exception $e) {
+            error_log("GetUserInfo Error: " . $e->getMessage());
+            $this->respond(["success" => false, "message" => "Server Error"], 500);
         }
     }
 
     public function updateNotifications($userId)
     {
-        $data = json_decode(file_get_contents("php://input"));
-        if (isset($data->email_notifications)) {
-            $this->user->id = $userId;
-            $this->user->email_notifications = $data->email_notifications;
-
-            if ($this->user->updateNotifications()) {
-                echo json_encode(array("success" => true, "message" => "Notification settings updated."));
-            } else {
-                http_response_code(503);
-                echo json_encode(array("success" => false, "message" => "Unable to update settings."));
+        try {
+            if (!$userId) {
+                $this->respond(["success" => false, "message" => "User ID required"], 400);
             }
-        } else {
-            http_response_code(400);
-            echo json_encode(array("success" => false, "message" => "Incomplete data."));
+
+            $data = $this->getJsonInput();
+
+            if (isset($data->email_notifications)) {
+                $this->user->id = $userId;
+                $this->user->email_notifications = $data->email_notifications;
+
+                if ($this->user->updateNotifications()) {
+                    $this->respond(["success" => true, "message" => "Notification settings updated"], 200);
+                } else {
+                    $this->respond(["success" => false, "message" => "Unable to update settings"], 503);
+                }
+            } else {
+                $this->respond(["success" => false, "message" => "Incomplete data"], 400);
+            }
+        } catch (Exception $e) {
+            error_log("UpdateNotifications Error: " . $e->getMessage());
+            $this->respond(["success" => false, "message" => "Server Error"], 500);
         }
     }
 
     public function changePassword($userId)
     {
-        $data = json_decode(file_get_contents("php://input"));
-        if (!empty($data->current_password) && !empty($data->new_password)) {
-            $this->user->id = $userId;
+        try {
+            if (!$userId) {
+                $this->respond(["success" => false, "message" => "User ID required"], 400);
+            }
 
-            // Fetch current password hash
-            $stmt = $this->user->getUserById();
-            if ($stmt->rowCount() > 0) {
-                $row = $stmt->fetch(PDO::FETCH_ASSOC);
-                $currentHash = $row['password_hash'];
+            $data = $this->getJsonInput();
 
-                if (password_verify($data->current_password, $currentHash)) {
-                    $this->user->password = $data->new_password;
-                    if ($this->user->updatePassword()) {
-                        echo json_encode(array("success" => true, "message" => "Password updated."));
+            if (!empty($data->current_password) && !empty($data->new_password)) {
+                $this->user->id = $userId;
+
+                // Fetch current password hash
+                $stmt = $this->user->getUserById();
+                if ($stmt->rowCount() > 0) {
+                    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                    $currentHash = $row['password_hash'];
+
+                    if (password_verify($data->current_password, $currentHash)) {
+                        $this->user->password = $data->new_password;
+                        if ($this->user->updatePassword()) {
+                            $this->respond(["success" => true, "message" => "Password updated"], 200);
+                        } else {
+                            $this->respond(["success" => false, "message" => "Unable to update password"], 503);
+                        }
                     } else {
-                        http_response_code(503);
-                        echo json_encode(array("success" => false, "message" => "Unable to update password."));
+                        $this->respond(["success" => false, "message" => "Incorrect current password"], 401);
                     }
                 } else {
-                    http_response_code(401);
-                    echo json_encode(array("success" => false, "message" => "Incorrect current password."));
+                    $this->respond(["success" => false, "message" => "User not found"], 404);
                 }
             } else {
-                http_response_code(404);
-                echo json_encode(array("success" => false, "message" => "User not found."));
+                $this->respond(["success" => false, "message" => "Incomplete data"], 400);
             }
-        } else {
-            http_response_code(400);
-            echo json_encode(array("success" => false, "message" => "Incomplete data."));
+        } catch (Exception $e) {
+            error_log("ChangePassword Error: " . $e->getMessage());
+            $this->respond(["success" => false, "message" => "Server Error"], 500);
         }
     }
 }
